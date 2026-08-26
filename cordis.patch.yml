@@ -1,0 +1,13 @@
+# dsh-extension-manager bundle patch — applied automatically when this package
+# is installed into a profile (`dsh plugin --profile <name> add` or a manual
+# bundle row).
+#
+# The user's own profile cordis.patch.yml is applied AFTER bundle layers and
+# wins per row, so every row here can still be overridden there.
+#
+# Stability note: this patch inserts exactly ONE row (this plugin). It never
+# touches rows owned by other layers.
+
+- insert:
+    - id: extension-manager
+      name: dsh-extension-manager
