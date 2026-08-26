@@ -1,0 +1,10 @@
+Push plan for Szjpeter/dsh-extension-manager
+
+Batch 1: README.md
+Batch 2: lib/convert.mjs, lib/install.mjs, lib/list.mjs, lib/loaderpatch.mjs, lib/mcp.mjs
+Batch 3: lib/mcpcheck.mjs, lib/mcpclient-lite.mjs, lib/region.mjs, lib/skills.mjs, lib/writepipeline.mjs
+Batch 4: lib/yaml.mjs, lib/github.mjs, lib/github-bridge.mjs
+Batch 5: lib/host.js (large ~35KB)
+Batch 6: lib/client.js (large ~58KB)
+Batch 7: lib/plugins.mjs (large ~40KB)
+Batch 8: tests/regression.mjs, tests/render.mjs
