@@ -268,6 +268,52 @@ console.log('── BOM immunity (2026-08-27 mine, struck twice) ──')
   }
 }
 
+console.log('── git repo classifier ──')
+{
+  // SodaMem regression: a repo whose package.json HAS dsh.bundle.patch was
+  // shown as 非 DSH 插件 when the MCP-bridge read hiccupped and the failure
+  // was silently classified "unknown". Now: retry, read-error is distinct,
+  // and cordis artifacts are a second identity signal.
+  const gh = await import('../lib/github.mjs')
+  function browseFixture(filesMap) {
+    return gh.detectRepoUnitsWithLister(
+      async (dir) => {
+        const prefix = dir ? dir + '/' : ''
+        return Object.keys(filesMap)
+          .filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/'))
+          .map((p) => ({ name: p.slice(prefix.length), path: p, type: 'file' }))
+      },
+      async (p) => {
+        const v = filesMap[p]
+        if (v === undefined) throw new Error('404 ' + p)
+        if (v instanceof Error) throw v
+        return v
+      }
+    )
+  }
+  const a = await browseFixture({
+    'package.json': JSON.stringify({ name: 'x', main: 'i.js', dsh: { bundle: { patch: './cordis.patch.yml' } } }),
+  })
+  check('dsh field → dsh-plugin', a.plugins[0]?.kind === 'dsh-plugin' && a.plugins[0].name === 'x')
+  const b = await browseFixture({
+    'package.json': JSON.stringify({ name: 'y', main: 'i.js' }),
+    'cordis.patch.yml': 'stub\n',
+  })
+  check('cordis artifact → dsh-plugin even without dsh field', b.plugins[0]?.kind === 'dsh-plugin')
+  const c = await browseFixture({
+    'package.json': JSON.stringify({ name: 'mcp-thing', bin: { x: 'b' } }),
+  })
+  check('bin pkg → mcp-server', c.plugins[0]?.kind === 'mcp-server')
+  const d = await browseFixture({
+    'package.json': new Error('network reset'),
+  })
+  check('unreadable package.json → read-error (NOT unknown)', d.plugins[0]?.kind === 'read-error')
+  const e = await browseFixture({
+    'package.json': JSON.stringify({ name: 'plain-pkg' }),
+  })
+  check('plain npm pkg → unknown', e.plugins[0]?.kind === 'unknown')
+}
+
 fs.rmSync(tmp, { force: true })
 // Test hygiene: the write pipeline rotates backup generations next to every
 // target it commits — sweep our own ring so runs never litter the repo.
