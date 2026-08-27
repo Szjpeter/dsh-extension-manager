@@ -355,7 +355,7 @@ console.log('── git clone install: stale-dir recovery ──')
   }
 }
 
-console.log('── zip plugin update check (origin provenance) ──')
+console.log('── zip plugin update check + auto update (origin provenance) ──')
 {
   const prevHome = process.env.DSH_HOME
   const realFetch = globalThis.fetch
@@ -364,7 +364,10 @@ console.log('── zip plugin update check (origin provenance) ──')
     process.env.DSH_HOME = iso
     const profDir = path.join(iso, 'profiles', 'web')
     fs.mkdirSync(profDir, { recursive: true })
-    const { writePluginOrigin, compareVersions, checkPluginUpdates } = await import('../lib/plugins.mjs')
+    const { writePluginOrigin, compareVersions, checkPluginUpdates, updatePluginItem } = await import('../lib/plugins.mjs')
+    const { execFile } = await import('node:child_process')
+    const { promisify } = await import('node:util')
+    const execFileAsync = promisify(execFile)
 
     check('compareVersions: newer/older/equal',
       compareVersions('2.0.0', '1.9.9') === 1 &&
@@ -379,12 +382,35 @@ console.log('── zip plugin update check (origin provenance) ──')
     check('writePluginOrigin accepts owner/repo', writePluginOrigin(plugDir, 'someuser/zip-plug') === true)
     check('writePluginOrigin rejects non-repo strings', writePluginOrigin(plugDir, 'not-a-repo') === false)
 
-    // Mock the network layer: remote package.json reports 2.0.0.
-    globalThis.fetch = async () => ({
-      ok: true, status: 200,
-      text: async () => JSON.stringify({ version: '2.0.0' }),
-      json: async () => ({ version: '2.0.0' }),
-    })
+    // Mock network by URL: search endpoint (query-aware), raw package.json,
+    // and tarball payloads. Build a REAL tar.gz (via system tar) WITH a
+    // top-level directory — exactly how GitHub tarballs are laid out — so
+    // zipUpdate's extraction path is exercised end-to-end.
+    const remoteSrc = path.join(iso, 'remote-src', 'zip-plug-HEAD')
+    fs.mkdirSync(remoteSrc, { recursive: true })
+    fs.writeFileSync(path.join(remoteSrc, 'package.json'), JSON.stringify({ name: 'zip-plug', version: '2.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(remoteSrc, 'index.js'), 'export const v2 = true\n')
+    const ball = path.join(iso, 'zip-plug.tgz')
+    await execFileAsync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-czf', ball, '-C', path.join(iso, 'remote-src'), 'zip-plug-HEAD'])
+
+    globalThis.fetch = async (url = '') => {
+      const u = String(url)
+      if (u.includes('/search/repositories')) {
+        const m = u.match(/q=([^&]+)/)
+        const q = m ? decodeURIComponent(m[1]).split('+')[0] : 'none'
+        return { ok: true, status: 200, json: async () => ({ items: [{ full_name: 'someuser/' + q, name: q }] }) }
+      }
+      if (u.includes('/tarball/')) {
+        const b = fs.readFileSync(ball)
+        return { ok: true, status: 200, arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) }
+      }
+      const wantsPlain = u.includes('zip-plain')
+      return {
+        ok: true, status: 200,
+        text: async () => JSON.stringify({ version: '2.0.0', name: wantsPlain ? 'zip-plain' : 'zip-plug' }),
+        json: async () => ({ version: '2.0.0', name: wantsPlain ? 'zip-plain' : 'zip-plug' }),
+      }
+    }
     const mkCtx = (dirs) => ({
       get: () => ({
         entries: () => dirs.map((d) => ({
@@ -399,14 +425,48 @@ console.log('── zip plugin update check (origin provenance) ──')
     check('zip plugin version-compares via origin file',
       !!row && row.kind === 'zip' && row.updateable === true && row.current === '1.0.0' && row.latest === '2.0.0')
 
-    // No origin file -> visible "origin unknown" row, never silent.
+    // One-click zip update: download tarball -> validate -> swap with backup.
+    const upd = await updatePluginItem(profDir, 'file:///' + plugDir.replace(/\\/g, '/') + '/index.js')
+    const newPkg = JSON.parse(fs.readFileSync(path.join(plugDir, 'package.json'), 'utf8'))
+    check('zip auto-update swaps to remote version',
+      upd.ok === true && newPkg.version === '2.0.0' && fs.existsSync(path.join(plugDir, 'index.js')))
+    check('zip update preserves provenance', JSON.parse(fs.readFileSync(path.join(plugDir, '.dsh-plugin-origin.json'), 'utf8')).repo === 'someuser/zip-plug')
+
+    // Origin-less dir: source AUTO-RESOLVED by name search + two-signal
+    // confirm, then persisted — the next check no longer needs the search.
     const plainDir = path.join(iso, 'extension-manager', 'plugins', 'zip-plain')
     fs.mkdirSync(plainDir, { recursive: true })
     fs.writeFileSync(path.join(plainDir, 'package.json'), JSON.stringify({ name: 'zip-plain', version: '1.0.0', main: 'index.js' }))
     const r2 = await checkPluginUpdates(mkCtx([plainDir]), profDir)
     const row2 = r2.plugins.find((p) => p.name && p.name.includes('zip-plain'))
-    check('origin-less zip plugin reports originUnknown',
-      !!row2 && row2.kind === 'zip' && row2.originUnknown === true && row2.updateable === false)
+    check('origin-less zip plugin auto-resolves its source and updates',
+      !!row2 && row2.kind === 'zip' && row2.updateable === true && row2.repo === 'someuser/zip-plain')
+    check('auto-confirmed source is persisted',
+      JSON.parse(fs.readFileSync(path.join(plainDir, '.dsh-plugin-origin.json'), 'utf8')).repo === 'someuser/zip-plain')
+
+    // Refusal guard: a needs-building source (no main entry) must be refused
+    // WITHOUT touching the installed dir. Tarball staged WITH a top-level
+    // directory (GitHub layout) so it reaches the validation step.
+    const remoteBad = path.join(iso, 'remote-bad', 'zip-plug-HEAD')
+    fs.mkdirSync(remoteBad, { recursive: true })
+    fs.writeFileSync(path.join(remoteBad, 'package.json'), JSON.stringify({ name: 'zip-plug', version: '3.0.0' }))
+    await execFileAsync(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-czf', path.join(iso, 'bad.tgz'), '-C', path.join(iso, 'remote-bad'), 'zip-plug-HEAD'])
+    const realFetch2 = globalThis.fetch
+    globalThis.fetch = async (url = '') => {
+      if (String(url).includes('/tarball/')) {
+        const b = fs.readFileSync(path.join(iso, 'bad.tgz'))
+        return { ok: true, status: 200, arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) }
+      }
+      return realFetch2(url)
+    }
+    try {
+      const bad = await updatePluginItem(profDir, 'file:///' + plugDir.replace(/\\/g, '/') + '/index.js')
+      const cur = JSON.parse(fs.readFileSync(path.join(plugDir, 'package.json'), 'utf8'))
+      check('needs-building source refused, current install untouched',
+        bad.ok === false && bad.code === 'invalid' && cur.version === '2.0.0' && fs.existsSync(path.join(plugDir, 'index.js')))
+    } finally {
+      globalThis.fetch = realFetch2
+    }
   } finally {
     globalThis.fetch = realFetch
     process.env.DSH_HOME = prevHome
