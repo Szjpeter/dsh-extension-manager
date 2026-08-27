@@ -355,6 +355,65 @@ console.log('── git clone install: stale-dir recovery ──')
   }
 }
 
+console.log('── zip plugin update check (origin provenance) ──')
+{
+  const prevHome = process.env.DSH_HOME
+  const realFetch = globalThis.fetch
+  const iso = fs.mkdtempSync(path.join(os.tmpdir(), 'exm-zipupd-'))
+  try {
+    process.env.DSH_HOME = iso
+    const profDir = path.join(iso, 'profiles', 'web')
+    fs.mkdirSync(profDir, { recursive: true })
+    const { writePluginOrigin, compareVersions, checkPluginUpdates } = await import('../lib/plugins.mjs')
+
+    check('compareVersions: newer/older/equal',
+      compareVersions('2.0.0', '1.9.9') === 1 &&
+      compareVersions('1.0.0', '1.0.0') === 0 &&
+      compareVersions('1.0.0', '2.0.0') === -1 &&
+      compareVersions('0.2.10', '0.2.9') === 1)
+
+    const plugDir = path.join(iso, 'extension-manager', 'plugins', 'zip-plug')
+    fs.mkdirSync(plugDir, { recursive: true })
+    fs.writeFileSync(path.join(plugDir, 'package.json'), JSON.stringify({ name: 'zip-plug', version: '1.0.0', main: 'index.js' }))
+    fs.writeFileSync(path.join(plugDir, 'index.js'), 'export {}\n')
+    check('writePluginOrigin accepts owner/repo', writePluginOrigin(plugDir, 'someuser/zip-plug') === true)
+    check('writePluginOrigin rejects non-repo strings', writePluginOrigin(plugDir, 'not-a-repo') === false)
+
+    // Mock the network layer: remote package.json reports 2.0.0.
+    globalThis.fetch = async () => ({
+      ok: true, status: 200,
+      text: async () => JSON.stringify({ version: '2.0.0' }),
+      json: async () => ({ version: '2.0.0' }),
+    })
+    const mkCtx = (dirs) => ({
+      get: () => ({
+        entries: () => dirs.map((d) => ({
+          id: 'include:' + path.basename(d),
+          options: { name: 'file:///' + d.replace(/\\/g, '/') + '/index.js' },
+        })),
+      }),
+    })
+    const ctx = mkCtx([plugDir])
+    const r = await checkPluginUpdates(ctx, profDir)
+    const row = r.plugins.find((p) => p.name && p.name.includes('zip-plug'))
+    check('zip plugin version-compares via origin file',
+      !!row && row.kind === 'zip' && row.updateable === true && row.current === '1.0.0' && row.latest === '2.0.0')
+
+    // No origin file -> visible "origin unknown" row, never silent.
+    const plainDir = path.join(iso, 'extension-manager', 'plugins', 'zip-plain')
+    fs.mkdirSync(plainDir, { recursive: true })
+    fs.writeFileSync(path.join(plainDir, 'package.json'), JSON.stringify({ name: 'zip-plain', version: '1.0.0', main: 'index.js' }))
+    const r2 = await checkPluginUpdates(mkCtx([plainDir]), profDir)
+    const row2 = r2.plugins.find((p) => p.name && p.name.includes('zip-plain'))
+    check('origin-less zip plugin reports originUnknown',
+      !!row2 && row2.kind === 'zip' && row2.originUnknown === true && row2.updateable === false)
+  } finally {
+    globalThis.fetch = realFetch
+    process.env.DSH_HOME = prevHome
+    fs.rmSync(iso, { recursive: true, force: true })
+  }
+}
+
 fs.rmSync(tmp, { force: true })
 // Test hygiene: the write pipeline rotates backup generations next to every
 // target it commits — sweep our own ring so runs never litter the repo.
