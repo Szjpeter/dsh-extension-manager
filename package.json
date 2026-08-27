@@ -1,6 +1,6 @@
 {
   "name": "dsh-extension-manager",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Extension Manager (扩展管理) for DeepSeek Harness (DSH): manage skills, MCP servers and plugins from the DSH Web settings page — no import, no market, stability first. Fork-lineage of dsh-extension-hub (MIT) rewritten around a safety-first composition-write pipeline.",
   "type": "module",
   "main": "lib/host.js",
