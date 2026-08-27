@@ -314,6 +314,47 @@ console.log('── git repo classifier ──')
   check('plain npm pkg → unknown', e.plugins[0]?.kind === 'unknown')
 }
 
+console.log('── git clone install: stale-dir recovery ──')
+{
+  // A failed network clone used to leave a half-created dir, and the
+  // "目录已存在，可能已安装" guard wedged every retry forever while the
+  // Plugins tab (correctly) showed nothing. Now an existing dir is validated:
+  // good → register without re-cloning; bad → wiped and reinstalled fresh.
+  const prevHome = process.env.DSH_HOME
+  const iso = fs.mkdtempSync(path.join(os.tmpdir(), 'exm-clone-'))
+  try {
+    process.env.DSH_HOME = iso
+    const profDir = path.join(iso, 'profiles', 'web')
+    fs.mkdirSync(profDir, { recursive: true })
+    const { installPlugin, validateClonePackage } = await import('../lib/plugins.mjs')
+
+    // validator branches (no network)
+    fs.mkdirSync(path.join(iso, 'v-ok'), { recursive: true })
+    fs.writeFileSync(path.join(iso, 'v-ok', 'package.json'), JSON.stringify({ name: 'x', main: 'index.js' }))
+    fs.writeFileSync(path.join(iso, 'v-ok', 'index.js'), 'export {}\n')
+    check('validator: valid clone passes', validateClonePackage(path.join(iso, 'v-ok')).ok === true)
+    fs.mkdirSync(path.join(iso, 'v-nomain'), { recursive: true })
+    fs.writeFileSync(path.join(iso, 'v-nomain', 'package.json'), JSON.stringify({ name: 'y' }))
+    check('validator: missing main refused', validateClonePackage(path.join(iso, 'v-nomain')).ok === false)
+    fs.mkdirSync(path.join(iso, 'v-deps'), { recursive: true })
+    fs.writeFileSync(path.join(iso, 'v-deps', 'package.json'), JSON.stringify({ name: 'z', main: 'i.js', dependencies: { lodash: '^4' } }))
+    check('validator: runtime deps refused', validateClonePackage(path.join(iso, 'v-deps')).ok === false)
+
+    // stale-but-valid dir → registered WITHOUT any network clone
+    const staleDir = path.join(iso, 'extension-manager', 'plugins', 'stale-plug')
+    fs.mkdirSync(staleDir, { recursive: true })
+    fs.writeFileSync(path.join(staleDir, 'package.json'), JSON.stringify({ name: 'stale-plug', main: 'index.js' }))
+    fs.writeFileSync(path.join(staleDir, 'index.js'), 'export {}\n')
+    const r = await installPlugin(profDir, 'someuser/stale-plug')
+    const patchText = fs.readFileSync(path.join(profDir, 'cordis.patch.yml'), 'utf8')
+    check('stale valid dir is registered, not wedged',
+      r.ok === true && String(r.message).includes('已补写注册行') && /- id: stale-plug/.test(patchText))
+  } finally {
+    process.env.DSH_HOME = prevHome
+    fs.rmSync(iso, { recursive: true, force: true })
+  }
+}
+
 fs.rmSync(tmp, { force: true })
 // Test hygiene: the write pipeline rotates backup generations next to every
 // target it commits — sweep our own ring so runs never litter the repo.
