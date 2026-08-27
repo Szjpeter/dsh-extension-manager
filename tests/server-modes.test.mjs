@@ -205,6 +205,59 @@ console.log('── v0.2.1 auto-lazy policy ──')
     JSON.stringify({ type: 'object', properties: { p: { type: 'string' } } }))
 }
 
+console.log('── M6 dead-connection rebuild ──')
+{
+  let instances = 0
+  function makeScriptedFactory(script) {
+    return function createClient() {
+      const idx = ++instances
+      return {
+        async initialize() {},
+        async close() {},
+        async request(method, params) {
+          if (method === 'tools/list') {
+            return { tools: [{ name: 'echo', description: 'e' }] }
+          }
+          if (method === 'tools/call') return script(idx)
+          throw new Error('unexpected ' + method)
+        },
+      }
+    }
+  }
+
+  const reg = makeRegistry()
+  const core = createBridgeCore({
+    tools: reg,
+    createClient: makeScriptedFactory((idx) => {
+      if (idx === 1) throw new Error('server process exited')
+      return { content: [{ type: 'text', text: `alive#${idx}` }] }
+    }),
+  })
+  await core.apply(CFG, 'lazy')
+  const out = await reg.registered.get('mcp__Github__echo').execute({ arguments: {} })
+  check('T8 fatal transport error rebuilds the connection once',
+    out.content[0].text === 'alive#2' && instances === 2)
+
+  let tries = 0
+  const trReg = makeRegistry()
+  const transientCore = createBridgeCore({
+    tools: trReg,
+    createClient: makeScriptedFactory(() => {
+      tries++
+      throw new Error('tools/call: HTTP 502')
+    }),
+  })
+  await transientCore.apply(CFG, 'lazy')
+  let rejected = null
+  try {
+    await trReg.registered.get('mcp__Github__echo').execute({ arguments: {} })
+  } catch (e) {
+    rejected = e
+  }
+  check('T8 transient HTTP failures are surfaced WITHOUT retry',
+    !!rejected && /HTTP 502/.test(rejected.message) && tries === 1)
+}
+
 console.log('── off retention (v0.2 switch semantics) ──')
 {
   // The ON/OFF switch persists 'off' rows so re-enabling stays gateway-managed
