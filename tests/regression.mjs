@@ -8,7 +8,7 @@ import { listSkills, listMcp } from '../lib/list.mjs'
 import { previewCompositionWrite, commitVerifiedWrite } from '../lib/writepipeline.mjs'
 import { setServerDisabled, removeServer, toggleMap } from '../lib/region.mjs'
 import { detectUpgradeTarget, probeMcpById } from '../lib/mcpcheck.mjs'
-import { parseYaml } from '../lib/yaml.mjs'
+import { parseYaml, splitFrontmatter } from '../lib/yaml.mjs'
 import { findMcpEntryAnywhere, toggleMcp, removeMcp } from '../lib/mcp.mjs'
 import { upsertServer } from '../lib/region.mjs'
 
@@ -223,6 +223,45 @@ console.log('── layer routing (M5) ──')
     removeMcp('mcp-not-there-anywhere')
     check('global-patch absent-id removal is byte-neutral',
       fs.readFileSync(webPatch, 'utf8') === beforeBytes)
+  } finally {
+    process.env.DSH_HOME = prevHome
+    fs.rmSync(iso, { recursive: true, force: true })
+  }
+}
+
+console.log('── BOM immunity (2026-08-27 mine, struck twice) ──')
+{
+  // PowerShell-edited files carry EF BB BF. It blanked the shared `list` RPC
+  // twice (patch layers on 08-27, then mcp-servers.yaml). Parser-level strip
+  // plus array guards must make ANY poisoned file listable, not fatal.
+  const prevHome = process.env.DSH_HOME
+  const iso = fs.mkdtempSync(path.join(os.tmpdir(), 'exm-bom-'))
+  try {
+    process.env.DSH_HOME = iso
+    fs.mkdirSync(path.join(iso, '.git'), { recursive: true }) // projectRoot anchor
+    fs.mkdirSync(path.join(iso, '.dsh'), { recursive: true })
+    const manifestFile = path.join(iso, '.dsh', 'mcp-servers.yaml')
+    // EXACT bytes a PowerShell-edited manifest carries: BOM + block sequence.
+    fs.writeFileSync(
+      manifestFile,
+      Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from('- id: mcp-bomy\n  name: \'@deepseek-ai/dsh-mcp-client\'\n  config:\n    serverName: Bomy\n    transport: stdio\n    command: node\n'),
+      ])
+    )
+    const rows = listMcp(iso)
+    const hit = rows.find((r) => r.source === 'manifest' && r.id === 'mcp-bomy')
+    check('BOM-poisoned manifest lists its rows (no "not iterable")',
+      rows.length >= 1 && !!hit && hit.serverName === 'Bomy')
+
+    // The raw-text frontmatter paths must be immune as well.
+    const md = Buffer.concat([
+      Buffer.from([0xef, 0xbb, 0xbf]),
+      Buffer.from('---\nname: bom-skill\ndescription: ok\n---\nbody\n'),
+    ])
+    const fm = splitFrontmatter(md.toString('utf8'))
+    check('BOM-poisoned SKILL.md frontmatter still recognized',
+      !!fm.frontmatter && fm.frontmatter.name === 'bom-skill' && fm.body === 'body\n')
   } finally {
     process.env.DSH_HOME = prevHome
     fs.rmSync(iso, { recursive: true, force: true })

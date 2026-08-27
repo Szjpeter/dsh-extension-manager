@@ -151,12 +151,15 @@ console.log('── generation swap safety ──')
 console.log('── encoding hardening ──')
 {
   const tmp = path.join('./', '.server-modes.tmp.yml')
-  // A BOM before a block sequence breaks naive YAML parsers into seeing a
-  // mapping key ("\uFEFF- id") — the real-world breakage shipped on 08-27.
+  // T5 history: a BOM before a block sequence used to glue "\uFEFF" onto the
+  // first "- id" line, so whole SEQUENCES parsed as one-key mappings — that
+  // blanked the MCP/Skills pages on 08-27 AND AGAIN via mcp-servers.yaml
+  // (PowerShell editors write BOM by default). Since v0.2.2 the parser strips
+  // the BOM, so poisoned files are immune at the single choke point.
   fs.writeFileSync(tmp, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('- a\n', 'utf8')]))
   const parsed = parseYaml(fs.readFileSync(tmp, 'utf8'))
-  check('T5 BOM + sequence parses as non-array object (documents the hazard)',
-    parsed !== null && !Array.isArray(parsed))
+  check('T5 BOM + sequence parses as ARRAY (BOM immune since v0.2.2)',
+    Array.isArray(parsed) && parsed.length === 1 && parsed[0] === 'a')
   fs.writeFileSync(tmp, '- id: mcp-x\n  name: y\n', 'utf8')
   const healthy = parseYaml(fs.readFileSync(tmp, 'utf8'))
   check('T5 BOM-free array stays an array through their parser',
