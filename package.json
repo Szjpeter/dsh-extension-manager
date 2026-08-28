@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "dsh-extension-manager",
   "version": "0.3.0",
   "description": "Extension Manager (鎵╁睍绠＄悊) for DeepSeek Harness (DSH): manage skills, MCP servers and plugins from the DSH Web settings page 鈥?no import, no market, stability first. Fork-lineage of dsh-extension-hub (MIT) rewritten around a safety-first composition-write pipeline.",

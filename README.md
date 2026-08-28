@@ -1,4 +1,4 @@
-﻿# dsh-extension-manager锛堟墿灞曠鐞嗭級
+# dsh-extension-manager锛堟墿灞曠鐞嗭級
 
 DeepSeek Harness (DSH) 鐨勬墿灞曠鐞嗕腑蹇冩彃浠讹細鍦?Web 璁剧疆椤电鐞?**Skills / MCP 鏈嶅姟鍣?/ 鎻掍欢**銆?鍩轰簬 `dsh-extension-hub`锛圡IT锛夌殑鎴愮啛鍣ㄥ畼閲嶅啓鑰屾垚锛涙棤瀵煎叆鍔熻兘銆佹棤鎻掍欢甯傚満銆佺ǔ鍋ョ涓€銆?
 ## 瀹夎
