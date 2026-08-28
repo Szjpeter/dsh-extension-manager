@@ -474,6 +474,50 @@ console.log('── zip plugin update check + auto update (origin provenance) �
   }
 }
 
+console.log('── install channel decision (one button) ──')
+{
+  const prevFetch = globalThis.fetch
+  const { chooseInstallChannel } = await import('../lib/plugins.mjs')
+  globalThis.fetch = async (url = '') => {
+    const u = String(url)
+    if (u.startsWith('https://registry.npmjs.org/')) {
+      const pkg = u.replace('https://registry.npmjs.org/', '').replace('/latest', '')
+      if (pkg === 'published-plug') return { ok: true, status: 200, json: async () => ({ version: '1.0.0' }) }
+      return { ok: false, status: 404, json: async () => ({}) }
+    }
+    if (u.startsWith('https://raw.githubusercontent.com/')) {
+      const parts = u.split('/')
+      const repo = parts[3] + '/' + parts[4]
+      const filePath = parts.slice(6).join('/')
+      if (repo === 'ok/cloneable') {
+        if (filePath === 'package.json') return { ok: true, status: 200, text: async () => JSON.stringify({ name: 'cloneable', main: 'index.js' }) }
+        if (filePath === 'index.js') return { ok: true, status: 200, text: async () => 'export {}\n' }
+        return { ok: false, status: 404, text: async () => '404' }
+      }
+      if (repo === 'bad/ts-no-dist') {
+        // package.json committed, but dist/ is NOT (the sodamem shape).
+        if (filePath === 'package.json') return { ok: true, status: 200, text: async () => JSON.stringify({ name: 'ts', main: './dist/cjs/index.js' }) }
+        return { ok: false, status: 404, text: async () => '404' }
+      }
+      return { ok: false, status: 404, text: async () => '404' }
+    }
+    return { ok: false, status: 404, text: async () => '', json: async () => ({}) }
+  }
+  try {
+    check('npm published → npm channel',
+      (await chooseInstallChannel('someuser/published-plug')).channel === 'npm')
+    check('not on npm + valid source → clone channel',
+      (await chooseInstallChannel('ok/cloneable')).channel === 'clone')
+    const none1 = await chooseInstallChannel('bad/ts-no-dist')
+    check('no npm + needs building → 无法安装 (main 缺失)',
+      none1.channel === 'none' && String(none1.reason).includes('main 入口缺失'))
+    const none2 = await chooseInstallChannel('bad/missing-repo')
+    check('repo unreadable → 无法安装', none2.channel === 'none' && String(none2.reason).includes('无法读取仓库'))
+  } finally {
+    globalThis.fetch = prevFetch
+  }
+}
+
 fs.rmSync(tmp, { force: true })
 // Test hygiene: the write pipeline rotates backup generations next to every
 // target it commits — sweep our own ring so runs never litter the repo.
