@@ -11,6 +11,7 @@ import { detectUpgradeTarget, probeMcpById } from '../lib/mcpcheck.mjs'
 import { parseYaml, splitFrontmatter } from '../lib/yaml.mjs'
 import { findMcpEntryAnywhere, toggleMcp, removeMcp } from '../lib/mcp.mjs'
 import { upsertServer } from '../lib/region.mjs'
+import { scanPlugin, scanOrphans, purgeArtifacts } from '../lib/leftovers.mjs'
 
 let passed = 0
 let failed = 0
@@ -563,6 +564,100 @@ console.log('── install channel decision (one button) ──')
     check('repo unreadable → 无法安装', none2.channel === 'none' && String(none2.reason).includes('无法读取仓库'))
   } finally {
     globalThis.fetch = prevFetch
+  }
+}
+
+console.log('── leftovers: scan & purge (isolated home) ──')
+{
+  const loHome = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lo-home-'))
+  const loProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'dsh-lo-prof-'))
+  try {
+    // mimic the dsh-pocket shape: data dir + cache dir + dep + bundle entry
+    fs.mkdirSync(path.join(loHome, 'dsh-pocket'), { recursive: true })
+    fs.writeFileSync(path.join(loHome, 'dsh-pocket', 'settings.json'), '{"lanEnabled":true}\n', 'utf8')
+    fs.mkdirSync(path.join(loHome, 'cache', 'dsh-pocket'), { recursive: true })
+    fs.writeFileSync(path.join(loHome, 'cache', 'dsh-pocket', 'blob.bin'), 'x'.repeat(1024), 'utf8')
+    fs.writeFileSync(
+      path.join(loProfile, 'package.json'),
+      JSON.stringify({ name: 't', dependencies: { 'dsh-pocket': '^1.14.5' }, dsh: { profile: { bundles: ['dsh-pocket'] } } }, null, 2) + '\n',
+      'utf8'
+    )
+    const scan1 = scanPlugin({ home: loHome, webProfileDir: loProfile, name: 'dsh-pocket', extraNames: [] })
+    check('scanPlugin finds 2 dirs + dep + bundle + count=4',
+      scan1.dirs.length === 2 && scan1.packageJson.dep === true && scan1.packageJson.bundle === true && scan1.count === 4)
+    const orph = scanOrphans({ home: loHome, liveNames: ['cost-meter'] })
+    check('scanOrphans flags dsh-pocket data dir', orph.orphans.some((o) => o.name === 'dsh-pocket' && o.kind === 'data'))
+    check('scanOrphans flags dsh-pocket cache dir', orph.orphans.some((o) => o.name === 'dsh-pocket' && o.kind === 'cache'))
+    check('scanOrphans ignores live names', !orph.orphans.some((o) => o.name === 'cost-meter'))
+    const purged = purgeArtifacts({
+      home: loHome, webProfileDir: loProfile, names: ['dsh-pocket'],
+      dirs: scan1.dirs.map((d) => d.path),
+      removePackage: true, removeNodeModules: false, liveNames: [],
+    })
+    check('purge removes both dirs', purged.ok === true && purged.removed.length === 2 && !fs.existsSync(path.join(loHome, 'dsh-pocket')))
+    const pkgAfter = JSON.parse(fs.readFileSync(path.join(loProfile, 'package.json'), 'utf8'))
+    check('purge strips dep + bundle from package.json',
+      !pkgAfter.dependencies['dsh-pocket'] && Array.isArray(pkgAfter.dsh.profile.bundles) && pkgAfter.dsh.profile.bundles.length === 0)
+    // safety refusals
+    fs.mkdirSync(path.join(loHome, 'sessions'), { recursive: true })
+    const evil1 = purgeArtifacts({ home: loHome, webProfileDir: loProfile, names: ['sessions'], dirs: [path.join(loHome, 'sessions')], liveNames: [] })
+    check('purge refuses harness core dir', evil1.ok === false && evil1.refused.some((r) => r.reason === 'core-directory') && fs.existsSync(path.join(loHome, 'sessions')))
+    const evil2 = purgeArtifacts({ home: loHome, webProfileDir: loProfile, names: [], dirs: [path.join(loHome, 'cache', 'sub', 'deep')], liveNames: [] })
+    check('purge refuses non-direct-child path', evil2.ok === false && evil2.refused.some((r) => r.reason === 'outside-whitelisted-roots'))
+    const evil3 = purgeArtifacts({ home: loHome, webProfileDir: loProfile, names: ['other-plugin'], dirs: [path.join(loHome, 'dsh-other')], liveNames: [] })
+    check('purge refuses name mismatch', evil3.ok === false && evil3.refused.some((r) => r.reason === 'name-mismatch'))
+    const live1 = purgeArtifacts({ home: loHome, webProfileDir: loProfile, names: ['liver'], dirs: [], removePackage: false, liveNames: ['liver'] })
+    check('live-name set accepted (no dirs, no-op ok)', live1.ok === true)
+    // node_modules removal via explicit name
+    const nmDir = path.join(loProfile, 'node_modules', 'dsh-pocket')
+    fs.mkdirSync(nmDir, { recursive: true })
+    const purged2 = purgeArtifacts({ home: loHome, webProfileDir: loProfile, names: ['dsh-pocket'], dirs: [], removeNodeModules: true, liveNames: [] })
+    check('purge removes node_modules/<name>', purged2.ok === true && purged2.nodeModulesRemoved.length === 1 && !fs.existsSync(nmDir))
+  } finally {
+    fs.rmSync(loHome, { recursive: true, force: true })
+    fs.rmSync(loProfile, { recursive: true, force: true })
+  }
+}
+
+console.log('── runtime dep auto-install (npm channel) ──')
+{
+  const prevFetch = globalThis.fetch
+  const webDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exm-dep-'))
+  fs.writeFileSync(path.join(webDir, 'package.json'), JSON.stringify({ name: 'profile', dependencies: {} }))
+  // Build a REAL npm-convention tarball (top dir named "package") so
+  // updateNpmPackage's extraction+validation path is exercised for real.
+  const depSrc = path.join(webDir, '_src', 'package')
+  fs.mkdirSync(depSrc, { recursive: true })
+  fs.writeFileSync(path.join(depSrc, 'package.json'), JSON.stringify({ name: 'sodamem', version: '0.1.0', main: 'index.js' }))
+  fs.writeFileSync(path.join(depSrc, 'index.js'), 'module.exports = {}\n')
+  const ball = path.join(webDir, 'dep.tgz')
+  const { execFile } = await import('node:child_process')
+  const { promisify } = await import('node:util')
+  await promisify(execFile)(process.platform === 'win32' ? 'tar.exe' : 'tar', ['-czf', ball, '-C', path.join(webDir, '_src'), 'package'])
+  globalThis.fetch = async (url = '') => {
+    const u = String(url)
+    if (u === 'https://registry.npmjs.org/sodamem/latest') {
+      return { ok: true, status: 200, json: async () => ({ version: '0.1.0', dist: { tarball: 'https://mock.test/sodamem.tgz' } }) }
+    }
+    if (u === 'https://mock.test/sodamem.tgz') {
+      const b = fs.readFileSync(ball)
+      return { ok: true, status: 200, arrayBuffer: async () => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength) }
+    }
+    return { ok: false, status: 404, json: async () => ({}), text: async () => '' }
+  }
+  try {
+    const { resolveRuntimeDeps } = await import('../lib/plugins.mjs')
+    const depsObj = {}
+    const r = await resolveRuntimeDeps(webDir, { sodamem: '^0.1.0' }, depsObj)
+    check('runtime dep auto-installed into profile node_modules',
+      r.installed.length === 1 && r.installed[0].startsWith('sodamem@') &&
+      fs.existsSync(path.join(webDir, 'node_modules', 'sodamem', 'package.json')))
+    check('dep recorded into profile deps object', depsObj.sodamem === '^0.1.0')
+    const r2 = await resolveRuntimeDeps(webDir, { ghost: '^1.0.0' }, {})
+    check('unresolvable dep lands in failed list', r2.failed.includes('ghost') && r2.installed.length === 0)
+  } finally {
+    globalThis.fetch = prevFetch
+    fs.rmSync(webDir, { recursive: true, force: true })
   }
 }
 

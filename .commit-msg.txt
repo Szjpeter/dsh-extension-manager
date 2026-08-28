@@ -1,0 +1,20 @@
+feat: auto-resolve npm runtime deps on install (+ parallel leftovers scan/purge)
+
+npm-channel installs bypass npm dependency resolution; the previous "run
+pnpm install" advice cannot even see plugin-internal deps (they are not in
+the profile manifest). Now:
+
+- resolveRuntimeDeps(webDir, depsObj, profileDeps): fetches each declared
+  runtime dep (registry probe -> updateNpmPackage tarball install), records
+  ^version entries into the profile manifest (caller persists), and degrades
+  failures to an explicit failed-list warning;
+- installNpmPlugin wires it in: "已自动安装依赖 ..." replaces the misleading
+  pnpm advice; unresolvable deps keep a manual-action warning;
+- missingRuntimeDeps removed (superseded).
+
+Also includes parallel-session work validated by the same suites:
+leftovers scan/purge (lib/leftovers.mjs + host RPCs + client button + tests)
+for cleaning orphaned plugin data/cache/dep/bundle artifacts.
+
+Regression now 72 cases (adds dep auto-install happy path, profile-dep
+recording, unresolvable-dep failure list) — all green offline.
