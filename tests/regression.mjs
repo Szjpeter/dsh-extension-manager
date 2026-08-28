@@ -349,6 +349,54 @@ console.log('── git clone install: stale-dir recovery ──')
     const patchText = fs.readFileSync(path.join(profDir, 'cordis.patch.yml'), 'utf8')
     check('stale valid dir is registered, not wedged',
       r.ok === true && String(r.message).includes('已补写注册行') && /- id: stale-plug/.test(patchText))
+
+    // sodamem-class guard: a clone whose bundle layer carries REQUIRED config
+    // (apiUrl) must get that config merged into the registered row — a
+    // config-less row failed loader activation and broke `dsh web` boot.
+    const cfgDir = path.join(iso, 'extension-manager', 'plugins', 'cfg-plug')
+    fs.mkdirSync(cfgDir, { recursive: true })
+    fs.writeFileSync(path.join(cfgDir, 'package.json'), JSON.stringify({ name: 'cfg-plug', main: 'index.js' }))
+    fs.writeFileSync(path.join(cfgDir, 'index.js'), 'export {}\n')
+    fs.writeFileSync(path.join(cfgDir, 'cordis.patch.yml'),
+      '- insert:\n    - id: cfg-plug\n      name: cfg-plug\n      config:\n        apiUrl: \'http://127.0.0.1:8000\'\n        tokenBudget: 1200\n')
+    const rc = await installPlugin(profDir, 'someuser/cfg-plug')
+    const cfgText = fs.readFileSync(path.join(profDir, 'cordis.patch.yml'), 'utf8')
+    const cfgDoc = parseYaml(cfgText) || []
+    let cfgRow = null
+    for (const e of cfgDoc) {
+      if (e && Array.isArray(e.insert)) {
+        for (const inner of e.insert) {
+          if (inner && inner.id === 'cfg-plug') cfgRow = inner
+        }
+      }
+    }
+    check('bundle-layer config merged into registered row (sodamem-class)',
+      rc.ok === true && !!cfgRow && cfgRow.config && cfgRow.config.apiUrl === 'http://127.0.0.1:8000' &&
+      String(rc.message).includes('已合并插件自带的默认配置'))
+
+    // `!!js` configs cannot be re-emitted faithfully — merge must be SKIPPED
+    // (row registered config-less, exactly the old behavior) instead of
+    // corrupting the patch with a {__js} map.
+    const jsDir = path.join(iso, 'extension-manager', 'plugins', 'js-plug')
+    fs.mkdirSync(jsDir, { recursive: true })
+    fs.writeFileSync(path.join(jsDir, 'package.json'), JSON.stringify({ name: 'js-plug', main: 'index.js' }))
+    fs.writeFileSync(path.join(jsDir, 'index.js'), 'export {}\n')
+    fs.writeFileSync(path.join(jsDir, 'cordis.patch.yml'),
+      '- insert:\n    - id: js-plug\n      name: js-plug\n      config:\n        token: !!js process.env.TOKEN\n')
+    const rj = await installPlugin(profDir, 'someuser/js-plug')
+    const jsText = fs.readFileSync(path.join(profDir, 'cordis.patch.yml'), 'utf8')
+    const jsDoc = parseYaml(jsText) || []
+    let jsRow = null
+    for (const e of jsDoc) {
+      if (e && Array.isArray(e.insert)) {
+        for (const inner of e.insert) {
+          if (inner && inner.id === 'js-plug') jsRow = inner
+        }
+      }
+    }
+    check('non-serializable (!!js) config merge skipped safely',
+      rj.ok === true && !!jsRow && (!jsRow.config || jsRow.config.token === undefined) &&
+      !String(rj.message).includes('已合并'))
   } finally {
     process.env.DSH_HOME = prevHome
     fs.rmSync(iso, { recursive: true, force: true })
