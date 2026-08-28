@@ -661,6 +661,56 @@ console.log('── runtime dep auto-install (npm channel) ──')
   }
 }
 
+console.log('── sidecars: follow-dsh daemon start ──')
+{
+  const prevHome = process.env.DSH_HOME
+  const iso = fs.mkdtempSync(path.join(os.tmpdir(), 'exm-side-'))
+  try {
+    process.env.DSH_HOME = iso
+    const sc = await import('../lib/sidecars.mjs')
+
+    // detection across pip user-scope layouts (injected roots)
+    const pyRoot = path.join(iso, 'APPDATA', 'Python', 'Python312', 'Scripts')
+    fs.mkdirSync(pyRoot, { recursive: true })
+    const fakeExe = path.join(pyRoot, 'sodamem.exe')
+    fs.writeFileSync(fakeExe, 'MZ')
+    check('findSodamemExe detects pip user-scope script',
+      sc.findSodamemExe({ appData: path.join(iso, 'APPDATA'), localAppData: path.join(iso, 'LOCAL') }) === fakeExe)
+    check('findSodamemExe returns null when nothing installed',
+      sc.findSodamemExe({ appData: path.join(iso, 'NOPE'), localAppData: path.join(iso, 'NOPE2') }) === null)
+
+    // zero-config seed on detection
+    check('seed writes sodamem sidecar when detected', sc.seedSodamemSidecar() === true)
+    check('seed is idempotent', sc.seedSodamemSidecar() === false)
+    const seeded = sc.readSidecars()
+    check('seeded entry has ensure args',
+      seeded.length === 1 && seeded[0].id === 'sodamem' && seeded[0].args.join(' ').includes('daemon ensure'))
+
+    // spawn path with a safe real command (node writes a marker, then exits)
+    const marker = path.join(iso, 'marker.txt')
+    sc.writeSidecars([{
+      id: 'test-run',
+      exe: process.execPath,
+      args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'ok')`],
+      enabled: true,
+    }])
+    const res = sc.ensureAllSidecars()
+    check('ensureAll spawns enabled sidecar detached', res.length === 1 && res[0].spawned === true)
+    await new Promise((r) => setTimeout(r, 1200))
+    check('spawned sidecar actually ran', fs.existsSync(marker))
+    check('sidecar log records the spawn',
+      fs.existsSync(sc.sidecarLogFile()) && fs.readFileSync(sc.sidecarLogFile(), 'utf8').includes('test-run'))
+
+    // disabled entries are skipped entirely
+    sc.writeSidecars([{ id: 'off', exe: process.execPath, args: ['-e', ''], enabled: false }])
+    const res2 = sc.ensureAllSidecars()
+    check('disabled sidecar skipped', res2.length === 1 && res2[0].skipped === 'disabled')
+  } finally {
+    process.env.DSH_HOME = prevHome
+    fs.rmSync(iso, { recursive: true, force: true })
+  }
+}
+
 fs.rmSync(tmp, { force: true })
 // Test hygiene: the write pipeline rotates backup generations next to every
 // target it commits — sweep our own ring so runs never litter the repo.
