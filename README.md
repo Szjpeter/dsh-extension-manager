@@ -86,3 +86,20 @@ dsh plugin --profile web add <鏈湴璺緞鎴栧彂甯冨悕>
 ## License
 
 MIT銆傚寘鍚潵鑷?[dsh-extension-hub](https://github.com/Relistencode/dsh-extension-hub)锛圡IT锛?鐨勭Щ妞嶄唬鐮併€?
+### v0.2.4 — GitHub Release 发行包通道（Release tgz 自动更新）
+
+针对"作者以 GitHub Release 附件（npm pack tgz）发行、不发布 npm、仓库根无 package.json"的插件：
+
+- **安装**：Git 仓库页对这类仓库自动识别为 `release` 通道（检测 `update/stable.json` + 发行包存在性），
+  下载发行 tgz 安装到托管插件目录，注册行 + 来源档案（含镜像记忆）一次完成；
+  也可通过新 RPC `installReleasePlugin` 显式安装（`{repo, release:{assetPattern, versionFile?}}`）。
+- **检查更新**：对比作者版本文件（`update/stable.json` 的 `latestVersion`）与本地版本，可更新时显示徽章；
+- **一键更新**：下载新发行包 → 校验（package.json/main/零运行时依赖/版本一致）→ 备份+原子替换+回滚；
+- **对等依赖链接**：发行包若声明 peerDependencies（如 `@deepseek-ai/dsh-mcp-client`），自动从宿主运行时
+  node_modules 以 junction（失败回退拷贝）链接进插件目录，保证裸导入可解析；
+- **镜像回退**：版本文件与发行包下载均按 GitHub → Gitee（同主/记忆镜像）顺序尝试，任一路径可用即成功；
+  成功读取版本文件后会把 `releaseUrls` 中的镜像持久化到来源档案，后续检查在 GitHub 不可达时也能命中镜像。
+- 首个受益者：`zhuyifang/tonghuasun-agent`（thx-mcp，同花顺桥）——由 HTTP MCP 行迁移为托管插件，
+  作者发版后可在插件管理一键更新。
+
+
